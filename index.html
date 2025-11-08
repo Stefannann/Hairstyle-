@@ -1,15 +1,62 @@
 <!DOCTYPE html>
 <html lang="de">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link src="style.css" rel="stylesheet">
-    <title>Titel</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Frisuren-Scout</title>
+    <link rel="stylesheet" href="style.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <script defer src="script.js"></script>
   </head>
   <body>
-    <!-- Sichtbarer Dokumentinhalt im body -->
-     <script>
-        src="script.js"
-     </script>
+    <header class="site-header">
+      <div class="header-inner">
+        <h1>Frisuren-Scout</h1>
+        <p>
+          Aktiviere deine Kamera, analysiere deine Gesichtszüge und erhalte
+          personalisierte Frisuren-Inspirationen – alles direkt im Browser.
+        </p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="scanner">
+        <div class="video-wrapper">
+          <video id="camera" autoplay muted playsinline></video>
+          <canvas id="overlay"></canvas>
+          <div id="loading-indicator" class="loading-indicator" hidden>
+            <span class="spinner"></span>
+            <span>Analysiere Gesichtszüge …</span>
+          </div>
+        </div>
+        <div class="controls">
+          <button id="start-button" disabled>Kamera starten</button>
+          <p id="status-message">Modelle werden geladen …</p>
+        </div>
+      </section>
+
+      <section class="analysis">
+        <article class="card">
+          <h2>Dein Profil</h2>
+          <ul id="feature-list" class="feature-list">
+            <li>Keine Daten – bitte Kamera aktivieren.</li>
+          </ul>
+        </article>
+        <article class="card suggestion-card">
+          <h2>Frisuren-Vorschlag</h2>
+          <p id="suggestion-text">
+            Sobald wir deine Gesichtszüge erkannt haben, zeigen wir dir hier
+            eine passende Frisurenidee.
+          </p>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>
+        Deine Analyse passiert ausschließlich lokal im Browser. Es werden keine
+        Fotos gespeichert oder hochgeladen.
+      </p>
+    </footer>
   </body>
 </html>
