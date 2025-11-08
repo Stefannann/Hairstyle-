@@ -17,6 +17,7 @@ async function loadModels() {
     await Promise.all([
       faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
       faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+      faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),
     ]);
     startButton.disabled = false;
     statusMessage.textContent = "Bereit – starte die Kamera und blicke frontal hinein.";
@@ -92,7 +93,8 @@ function startDetectionLoop() {
 
     const result = await faceapi
       .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.5 }))
-      .withFaceLandmarks(true);
+      .withFaceLandmarks(true)
+      .withAgeAndGender();
 
     renderOverlay(result);
 
@@ -138,20 +140,24 @@ function analyzeFace(result) {
   const positions = landmarks.positions;
 
   const eyeColor = estimateEyeColor(positions);
+  const hairColor = estimateHairColor(detection);
   const forehead = estimateForehead(detection, landmarks);
   const jaw = estimateJaw(positions, detection);
   const symmetry = estimateSymmetry(positions, detection);
   const faceShape = determineFaceShape(positions, detection, { forehead, jaw });
+  const ageProfile = categorizeAge(result.age);
 
   const suggestion = generateSuggestion({
     eyeColor,
+    hairColor,
     forehead,
     jaw,
     symmetry,
     faceShape,
+    ageProfile,
   });
 
-  return { eyeColor, forehead, jaw, symmetry, faceShape, suggestion };
+  return { eyeColor, hairColor, forehead, jaw, symmetry, faceShape, ageProfile, suggestion };
 }
 
 function estimateEyeColor(positions) {
@@ -188,6 +194,46 @@ function estimateEyeColor(positions) {
   const avgB = b / totalPixels;
 
   const { label, detail } = categorizeEyeColor(avgR, avgG, avgB);
+
+  return { label, detail, rgb: [Math.round(avgR), Math.round(avgG), Math.round(avgB)] };
+}
+
+function estimateHairColor(detection) {
+  if (!hiddenCanvas) {
+    return { label: "Keine Daten", detail: "", rgb: [0, 0, 0] };
+  }
+
+  const ctx = hiddenCanvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+
+  const { x, y, width, height } = detection.box;
+  const sampleX = Math.max(Math.round(x + width * 0.1), 0);
+  const sampleWidth = Math.min(Math.round(width * 0.8), hiddenCanvas.width - sampleX);
+  const sampleHeight = Math.min(Math.round(height * 0.25), hiddenCanvas.height);
+  const sampleY = Math.max(Math.round(y - sampleHeight * 0.25), 0);
+  const safeHeight = Math.min(sampleHeight, hiddenCanvas.height - sampleY);
+
+  if (sampleWidth <= 0 || safeHeight <= 0) {
+    return { label: "Unbekannt", detail: "", rgb: [0, 0, 0] };
+  }
+
+  const imageData = ctx.getImageData(sampleX, sampleY, sampleWidth, safeHeight).data;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  const totalPixels = imageData.length / 4;
+
+  for (let i = 0; i < imageData.length; i += 4) {
+    r += imageData[i];
+    g += imageData[i + 1];
+    b += imageData[i + 2];
+  }
+
+  const avgR = r / totalPixels;
+  const avgG = g / totalPixels;
+  const avgB = b / totalPixels;
+
+  const { label, detail } = categorizeHairColor(avgR, avgG, avgB);
 
   return { label, detail, rgb: [Math.round(avgR), Math.round(avgG), Math.round(avgB)] };
 }
@@ -257,6 +303,52 @@ function categorizeEyeColor(r, g, b) {
   return {
     label: "Grau",
     detail: "Neutrale Farben und klare Konturen betonen deine Augen.",
+  };
+}
+
+function categorizeHairColor(r, g, b) {
+  const brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const hue = Math.atan2(Math.sqrt(3) * (g - b), 2 * r - g - b);
+  const hueDegrees = ((hue * 180) / Math.PI + 360) % 360;
+
+  if (brightness >= 0.78) {
+    return {
+      label: "Blond", 
+      detail: "Helle Strähnen und sanfte Low-Lights schaffen zusätzliche Tiefe ohne Härte.",
+    };
+  }
+
+  if (brightness <= 0.28) {
+    return {
+      label: "Dunkelbraun/Schwarz",
+      detail: "Glanzsprays oder spiegelnde Finishes bringen Struktur in die dunklen Längen.",
+    };
+  }
+
+  if (hueDegrees >= 12 && hueDegrees <= 40) {
+    return {
+      label: "Kupfer/Rot",
+      detail: "Weiche Wellen oder Locken reflektieren das warme Licht besonders lebendig.",
+    };
+  }
+
+  if (brightness >= 0.55) {
+    return {
+      label: "Hellbraun",
+      detail: "Balayage in Karamell- und Honigtönen betont die Vielschichtigkeit.",
+    };
+  }
+
+  if (brightness <= 0.45) {
+    return {
+      label: "Mittel- bis Dunkelbraun",
+      detail: "Sanfte Stufen und Face-Framing-Strähnen setzen lebendige Akzente.",
+    };
+  }
+
+  return {
+    label: "Grau/Asch",
+    detail: "Klare Konturen oder silbrig glänzende Finishes wirken besonders edel.",
   };
 }
 
@@ -345,6 +437,48 @@ function euclidean(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function categorizeAge(age) {
+  if (!Number.isFinite(age)) {
+    return {
+      label: "Unbekannt",
+      detail: "Alter konnte nicht zuverlässig geschätzt werden – konzentriere dich auf Form und Struktur.",
+      years: null,
+    };
+  }
+
+  const roundedAge = Number(age.toFixed(1));
+
+  if (age < 25) {
+    return {
+      label: "Unter 25",
+      detail: "Junge Looks vertragen mutige Strukturen, Experimente mit Farbe und verspielte Ponys.",
+      years: roundedAge,
+    };
+  }
+
+  if (age < 35) {
+    return {
+      label: "25 – 34",
+      detail: "Ausgewogene Stufen mit leichter Textur verbinden Professionalität mit Dynamik.",
+      years: roundedAge,
+    };
+  }
+
+  if (age < 50) {
+    return {
+      label: "35 – 49",
+      detail: "Face-Framing-Highlights und polierte Stylings bringen Frische und Eleganz.",
+      years: roundedAge,
+    };
+  }
+
+  return {
+    label: "50+",
+    detail: "Weiche Konturen und glänzende Finishes sorgen für ein jugendliches Strahlen.",
+    years: roundedAge,
+  };
+}
+
 function determineFaceShape(positions, detection, { forehead, jaw }) {
   const foreheadWidth = euclidean(positions[19], positions[24]);
   const cheekboneWidth = euclidean(positions[1], positions[15]);
@@ -379,7 +513,15 @@ function determineFaceShape(positions, detection, { forehead, jaw }) {
   };
 }
 
-function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
+function generateSuggestion({
+  eyeColor,
+  hairColor,
+  forehead,
+  jaw,
+  symmetry,
+  faceShape,
+  ageProfile,
+}) {
   const hairstyleLibrary = {
     Oval: [
       {
@@ -396,6 +538,16 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
         name: "Long Layered Bob",
         description:
           "schulterlange Stufen, die die natürliche Balance deiner Gesichtsproportionen unterstreichen.",
+      },
+      {
+        name: "Soft Curtain Layers",
+        description:
+          "lange Curtain Bangs mit fließenden Stufen, die mühelos zwischen casual und elegant wechseln.",
+      },
+      {
+        name: "Blunt Bob mit Micro-Pony",
+        description:
+          "gerader Bob mit kurzem Pony betont deine harmonische Gesichtsform und wirkt ultra-modern.",
       },
     ],
     Rund: [
@@ -414,6 +566,16 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
         description:
           "aufgestellte Längen mit strukturierter Oberfläche bringen Höhe und Lebendigkeit.",
       },
+      {
+        name: "Layered Wolf Cut",
+        description:
+          "viel Textur und Fransen im Deckhaar sorgen für vertikale Linien und rockige Dynamik.",
+      },
+      {
+        name: "High Top Braids",
+        description:
+          "hochgesetzte Flecht-Elemente strecken optisch und setzen deine Gesichtszüge wirkungsvoll in Szene.",
+      },
     ],
     Quadratisch: [
       {
@@ -430,6 +592,16 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
         name: "Layered Fringe",
         description:
           "gestufter Pony mit Volumen über der Stirn lockert die kantige Form sichtbar.",
+      },
+      {
+        name: "Wavy Shag",
+        description:
+          "lockere Stufen und sanfte Wellen lassen harte Winkel weicher erscheinen.",
+      },
+      {
+        name: "Rounded Afro",
+        description:
+          "natürliche Curls mit runder Silhouette balancieren die kantige Kieferpartie.",
       },
     ],
     Herzförmig: [
@@ -448,6 +620,16 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
         description:
           "kurzer Schnitt mit betonter Struktur am Oberkopf bringt Fokus auf die Augen und Wangenknochen.",
       },
+      {
+        name: "Low Pony mit Volumen",
+        description:
+          "ein tiefer Pferdeschwanz mit sanftem Volumen seitlich gleicht die Stirnlinie gekonnt aus.",
+      },
+      {
+        name: "Layered Midi Cut",
+        description:
+          "mittellange Stufen mit leichten Waves füllen den Bereich unterhalb des Kinns für mehr Balance.",
+      },
     ],
     Diamant: [
       {
@@ -464,6 +646,16 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
         name: "Sleek Side Part",
         description:
           "glatte Längen mit tiefem Seitenscheitel lassen die Stirn schmaler erscheinen und betonen die Augen.",
+      },
+      {
+        name: "Voluminous Curls",
+        description:
+          "definierte Locken mit Fokus auf dem Oberkopf öffnen die Silhouette und rahmen die Konturen weich.",
+      },
+      {
+        name: "Braided Crown",
+        description:
+          "eine lockere Flechtkrone lässt die Stirn zarter wirken und hebt deine Augenpartie hervor.",
       },
     ],
   };
@@ -488,6 +680,8 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
     `Gesichtsform erkannt: ${faceShape.label}. ${faceShape.detail}`,
     `Konkrete Empfehlung: ${chosenStyle.name} – ${chosenStyle.description}`,
   ];
+
+  lines.push(`Natürliche Haarfarbe: ${hairColor.label}. ${hairColor.detail}`);
 
   switch (eyeColor.label) {
     case "Blau":
@@ -525,10 +719,25 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
     lines.push("Klar definierte Linien und präzise Schnitte unterstreichen deine natürliche Symmetrie.");
   }
 
+  if (ageProfile.years !== null) {
+    lines.push(`Altersprofil: ${ageProfile.label} (≈ ${ageProfile.years} Jahre). ${ageProfile.detail}`);
+  } else {
+    lines.push(`Altersprofil: ${ageProfile.label}. ${ageProfile.detail}`);
+  }
+
   return lines.join(" ");
 }
 
-function renderAnalysis({ eyeColor, forehead, jaw, symmetry, faceShape, suggestion }) {
+function renderAnalysis({
+  eyeColor,
+  hairColor,
+  forehead,
+  jaw,
+  symmetry,
+  faceShape,
+  ageProfile,
+  suggestion,
+}) {
   featureList.innerHTML = "";
 
   const items = [
@@ -536,6 +745,11 @@ function renderAnalysis({ eyeColor, forehead, jaw, symmetry, faceShape, suggesti
       label: "Augenfarbe",
       value: `${eyeColor.label} (RGB ${eyeColor.rgb.join(", ")})`,
       detail: eyeColor.detail,
+    },
+    {
+      label: "Haarfarbe",
+      value: `${hairColor.label} (RGB ${hairColor.rgb.join(", ")})`,
+      detail: hairColor.detail,
     },
     {
       label: "Stirnhöhe",
@@ -556,6 +770,14 @@ function renderAnalysis({ eyeColor, forehead, jaw, symmetry, faceShape, suggesti
       label: "Gesichtsform",
       value: `${faceShape.label} (Länge/Breite ${faceShape.lengthWidthRatio})`,
       detail: faceShape.detail,
+    },
+    {
+      label: "Altersprofil",
+      value:
+        ageProfile.years !== null
+          ? `${ageProfile.label} (≈ ${ageProfile.years} Jahre)`
+          : ageProfile.label,
+      detail: ageProfile.detail,
     },
   ];
 
