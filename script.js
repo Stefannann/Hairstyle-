@@ -9,6 +9,8 @@ const loadingIndicator = document.getElementById("loading-indicator");
 
 let detectionInterval = null;
 let hiddenCanvas = null;
+let activeStream = null;
+let hasCapturedData = false;
 
 async function loadModels() {
   try {
@@ -31,6 +33,8 @@ async function startCamera() {
     return;
   }
 
+  stopActiveStream();
+  hasCapturedData = false;
   loadingIndicator.hidden = false;
   featureList.innerHTML = "<li>Warte auf Gesichtserkennung …</li>";
   suggestionText.textContent = "Wir sammeln gerade Daten zu deinen Gesichtszügen.";
@@ -41,6 +45,7 @@ async function startCamera() {
       audio: false,
     });
     video.srcObject = stream;
+    activeStream = stream;
 
     video.onloadedmetadata = () => {
       video.play();
@@ -55,6 +60,9 @@ async function startCamera() {
     statusMessage.textContent =
       "Kamera konnte nicht gestartet werden. Bitte erlaube den Zugriff oder wähle ein anderes Gerät.";
     loadingIndicator.hidden = true;
+    stopActiveStream();
+    startButton.disabled = false;
+    startButton.textContent = "Erneut versuchen";
   }
 }
 
@@ -74,6 +82,10 @@ function startDetectionLoop() {
   }
 
   detectionInterval = setInterval(async () => {
+    if (hasCapturedData) {
+      return;
+    }
+
     if (video.paused || video.ended) {
       return;
     }
@@ -88,6 +100,7 @@ function startDetectionLoop() {
       const analysis = analyzeFace(result);
       renderAnalysis(analysis);
       loadingIndicator.hidden = true;
+      finalizeCapture();
     } else {
       statusMessage.textContent = "Bitte bleibe frontal im Bild und nutze weiches Licht.";
     }
@@ -128,10 +141,17 @@ function analyzeFace(result) {
   const forehead = estimateForehead(detection, landmarks);
   const jaw = estimateJaw(positions, detection);
   const symmetry = estimateSymmetry(positions, detection);
+  const faceShape = determineFaceShape(positions, detection, { forehead, jaw });
 
-  const suggestion = generateSuggestion({ eyeColor, forehead, jaw, symmetry });
+  const suggestion = generateSuggestion({
+    eyeColor,
+    forehead,
+    jaw,
+    symmetry,
+    faceShape,
+  });
 
-  return { eyeColor, forehead, jaw, symmetry, suggestion };
+  return { eyeColor, forehead, jaw, symmetry, faceShape, suggestion };
 }
 
 function estimateEyeColor(positions) {
@@ -325,8 +345,149 @@ function euclidean(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function generateSuggestion({ eyeColor, forehead, jaw, symmetry }) {
-  const lines = [];
+function determineFaceShape(positions, detection, { forehead, jaw }) {
+  const foreheadWidth = euclidean(positions[19], positions[24]);
+  const cheekboneWidth = euclidean(positions[1], positions[15]);
+  const jawWidth = euclidean(positions[4], positions[12]);
+  const faceLength = positions[8].y - detection.box.y;
+  const lengthWidthRatio = faceLength / detection.box.width;
+
+  let label = "Oval";
+  let detail = "Ausgewogene Proportionen – du kannst mit vielen Längen experimentieren.";
+
+  if (cheekboneWidth >= foreheadWidth * 1.08 && cheekboneWidth >= jawWidth * 1.08) {
+    label = "Diamant";
+    detail = "Setze auf Volumen am Oberkopf und weichere Seiten, um die Wangenknochen zu betonen.";
+  } else if (foreheadWidth > jawWidth * 1.1 && jaw.label === "Schmal") {
+    label = "Herzförmig";
+    detail = "Weiche Übergänge im Kinnbereich schaffen Balance zur breiteren Stirn.";
+  } else if (lengthWidthRatio <= 1.25 && jaw.label === "Breit") {
+    label = "Quadratisch";
+    detail = "Runde Konturen und Textur lassen die markante Kieferlinie sanfter wirken.";
+  } else if (lengthWidthRatio <= 1.3 && cheekboneWidth >= jawWidth * 0.95) {
+    label = "Rund";
+    detail = "Vertikale Linien und Volumen am Oberkopf strecken dein Gesicht optisch.";
+  } else if (lengthWidthRatio >= 1.45 && jaw.label !== "Breit") {
+    label = "Oval";
+    detail = "Ausgewogene Proportionen – du kannst mühelos zwischen verschiedenen Längen wechseln.";
+  }
+
+  return {
+    label,
+    detail,
+    lengthWidthRatio: Number(lengthWidthRatio.toFixed(2)),
+  };
+}
+
+function generateSuggestion({ eyeColor, forehead, jaw, symmetry, faceShape }) {
+  const hairstyleLibrary = {
+    Oval: [
+      {
+        name: "French Crop",
+        description:
+          "kurzer Pony mit texturierter Deckpartie – betont die ausgeglichene Silhouette und bleibt pflegeleicht.",
+      },
+      {
+        name: "Taper Fade",
+        description:
+          "sanfter Übergang an den Seiten mit leichtem Volumen oben sorgt für einen klaren, modernen Rahmen.",
+      },
+      {
+        name: "Long Layered Bob",
+        description:
+          "schulterlange Stufen, die die natürliche Balance deiner Gesichtsproportionen unterstreichen.",
+      },
+    ],
+    Rund: [
+      {
+        name: "Pompadour Fade",
+        description:
+          "hohes Volumen am Oberkopf streckt visuell und die kurz gehaltenen Seiten formen markante Konturen.",
+      },
+      {
+        name: "Asymmetrischer Bob",
+        description:
+          "diagonal verlaufende Front schafft Länge und lenkt den Fokus auf deine Augen.",
+      },
+      {
+        name: "Textured Quiff",
+        description:
+          "aufgestellte Längen mit strukturierter Oberfläche bringen Höhe und Lebendigkeit.",
+      },
+    ],
+    Quadratisch: [
+      {
+        name: "Side Part Undercut",
+        description:
+          "seitlicher Scheitel mit präzisen Konturen weicht die markante Kieferlinie elegant auf.",
+      },
+      {
+        name: "Soft Waves",
+        description:
+          "sanfte Wellen mit leichtem Stufenschnitt runden harte Winkel ab und wirken sophisticated.",
+      },
+      {
+        name: "Layered Fringe",
+        description:
+          "gestufter Pony mit Volumen über der Stirn lockert die kantige Form sichtbar.",
+      },
+    ],
+    Herzförmig: [
+      {
+        name: "Curtain Bangs",
+        description:
+          "mittig geteilte Fransen rahmen die Stirn weicher ein und gleichen das zarte Kinn aus.",
+      },
+      {
+        name: "Wavy Lob",
+        description:
+          "schulterlange, leichte Wellen füllen den Bereich um das Kinn und wirken besonders harmonisch.",
+      },
+      {
+        name: "Textured Pixie",
+        description:
+          "kurzer Schnitt mit betonter Struktur am Oberkopf bringt Fokus auf die Augen und Wangenknochen.",
+      },
+    ],
+    Diamant: [
+      {
+        name: "Disconnected Undercut",
+        description:
+          "kürzere Seiten mit betontem Deckhaar lenken die Aufmerksamkeit auf deine markanten Wangenknochen.",
+      },
+      {
+        name: "Shag Cut",
+        description:
+          "vielschichtige Stufen mit softer Bewegung gleichen breite Wangen aus und wirken rockig.",
+      },
+      {
+        name: "Sleek Side Part",
+        description:
+          "glatte Längen mit tiefem Seitenscheitel lassen die Stirn schmaler erscheinen und betonen die Augen.",
+      },
+    ],
+  };
+
+  const fallbackStyles = [
+    {
+      name: "Modern Fade",
+      description:
+        "klassischer Übergang mit variablem Deckhaar – vielseitig kombinierbar mit Textur oder Glanz.",
+    },
+    {
+      name: "Layered Bob",
+      description:
+        "vielseitige Stufen, die sich individuell anpassen lassen und Gesichtszüge sanft umspielen.",
+    },
+  ];
+
+  const stylesForShape = hairstyleLibrary[faceShape.label] || fallbackStyles;
+  const chosenStyle = stylesForShape[Math.floor(Math.random() * stylesForShape.length)];
+
+  const lines = [
+    `Gesichtsform erkannt: ${faceShape.label}. ${faceShape.detail}`,
+    `Konkrete Empfehlung: ${chosenStyle.name} – ${chosenStyle.description}`,
+  ];
 
   switch (eyeColor.label) {
     case "Blau":
@@ -367,7 +528,7 @@ function generateSuggestion({ eyeColor, forehead, jaw, symmetry }) {
   return lines.join(" ");
 }
 
-function renderAnalysis({ eyeColor, forehead, jaw, symmetry, suggestion }) {
+function renderAnalysis({ eyeColor, forehead, jaw, symmetry, faceShape, suggestion }) {
   featureList.innerHTML = "";
 
   const items = [
@@ -390,6 +551,11 @@ function renderAnalysis({ eyeColor, forehead, jaw, symmetry, suggestion }) {
       label: "Symmetrie",
       value: `${symmetry.label} (Score ${symmetry.score})`,
       detail: symmetry.detail,
+    },
+    {
+      label: "Gesichtsform",
+      value: `${faceShape.label} (Länge/Breite ${faceShape.lengthWidthRatio})`,
+      detail: faceShape.detail,
     },
   ];
 
@@ -416,6 +582,44 @@ function renderAnalysis({ eyeColor, forehead, jaw, symmetry, suggestion }) {
   });
 
   suggestionText.textContent = suggestion;
+}
+
+function finalizeCapture() {
+  if (hasCapturedData) {
+    return;
+  }
+
+  hasCapturedData = true;
+
+  if (detectionInterval) {
+    clearInterval(detectionInterval);
+    detectionInterval = null;
+  }
+
+  loadingIndicator.hidden = true;
+  stopActiveStream();
+
+  const ctx = overlay.getContext("2d");
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  startButton.disabled = false;
+  startButton.textContent = "Erneut scannen";
+  statusMessage.textContent =
+    "Analyse abgeschlossen – Kamera deaktiviert. Starte bei Bedarf eine neue Aufnahme.";
+}
+
+function stopActiveStream() {
+  if (activeStream) {
+    activeStream.getTracks().forEach((track) => track.stop());
+    activeStream = null;
+  }
+
+  if (!video.paused) {
+    video.pause();
+  }
+
+  video.srcObject = null;
+  video.onloadedmetadata = null;
 }
 
 startButton.addEventListener("click", () => {
